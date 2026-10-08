@@ -1,0 +1,11 @@
+ .gitignore                 |    9 [32m+[m
+ README.md                  |  124 [32m++++[m[31m-[m
+ backend/db/schema.sql      |   15 [32m+[m
+ frontend/index.html        |    1 [32m+[m
+ frontend/package-lock.json | 1755 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ frontend/package.json      |    1 [32m+[m
+ frontend/src/main.tsx      |   30 [32m++[m
+ frontend/src/style.css     |    1 [32m+[m
+ frontend/tsconfig.json     |    1 [32m+[m
+ frontend/vite.config.ts    |    3 [32m+[m
+ 10 files changed, 1939 insertions(+), 1 deletion(-)
