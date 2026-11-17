@@ -1,4 +1,5 @@
-backend/.venv/
+backend/.venv*/
+.venv*/
 *.db
 *.db-wal
 *.db-shm
@@ -7,5 +8,9 @@ __pycache__/
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
 backend/eval/results/*.json
 !backend/eval/results/*-stub.json

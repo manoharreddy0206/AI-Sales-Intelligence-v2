@@ -10,8 +10,9 @@ services:
     envVars:
       - key: DEMO_MODE
         value: "1"
-      - key: COPILOT_PROVIDER
-        value: anthropic
+      # COPILOT_PROVIDER is deliberately unset: the backend uses Anthropic when
+      # ANTHROPIC_API_KEY is present and the labelled stub provider when it is not.
+      # Forcing "anthropic" without a key made every copilot answer an error.
       - key: COPILOT_MODEL
         value: claude-haiku-5-5
       - key: ANTHROPIC_API_KEY
