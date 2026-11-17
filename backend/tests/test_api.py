@@ -1,3 +1,6 @@
+import pytest
+
+pytest.importorskip("fastapi", reason="FastAPI not installed; HTTP tests need backend/requirements.txt")
 import io
 
 from fastapi.testclient import TestClient
