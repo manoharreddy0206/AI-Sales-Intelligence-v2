@@ -134,7 +134,7 @@ npm run build
 | Check | Result |
 | --- | --- |
 | pytest in CI (Python 3.12, Ubuntu, pinned requirements) | **46 passed, 0 failed, 0 skipped**. The FastAPI HTTP tests run; CI fails if any test is skipped. |
-| Copilot eval in CI, stub provider | **24/24** cases. Numeric 12/12 against independent SQL and the dashboard function; citations 6/6; median 1.0 ms in-process. |
+| Copilot eval in CI, stub provider | **24/24** cases. Numeric 12/12 against independent SQL and the dashboard function; citations 6/6; median 1 to 2 ms in-process across CI runs. |
 | Copilot eval, real Anthropic model | **Pending**: no API key configured yet |
 | Frontend in CI | `tsc --noEmit` and the Vite build pass; `npm audit` reports 0 vulnerabilities |
 | Docker image in CI | Builds; smoke test passes; upload returns 403 in demo mode |

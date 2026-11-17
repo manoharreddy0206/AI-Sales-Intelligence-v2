@@ -47,7 +47,7 @@ The cases are in 24 questions in `backend/eval/questions.jsonl`. Ground truth is
 | Glossary passage containing injected instructions, followed by a `run_sql` call | 1 | 1/1 (call refused, row count unchanged, citation kept) |
 | **Total** | **24** | **24/24**. Numeric 12/12, citations 6/6. |
 
-Latency in CI: median 1.0 ms, p95 3 ms. This is in-process with no network or LLM, so it says nothing about real-model latency. On the live demo, stub answers took 3 to 5 ms server-side. CI uploads the raw JSON as the `backend-reports` artifact, and an earlier local run is checked in at `backend/eval/results/2026-11-17-stub.json`.
+Latency in CI: median 1 to 2 ms, p95 3 to 4 ms across runs. This is in-process with no network or LLM, so it says nothing about real-model latency. On the live demo, stub answers took 3 to 5 ms server-side. CI uploads the raw JSON as the `backend-reports` artifact, and an earlier local run is checked in at `backend/eval/results/2026-11-17-stub.json`.
 
 **What the stub run measures.** It tests the tool layer, period resolution, the agreement between dashboard and copilot, citations, the numeric guard and fault handling. The stub picks tools with keyword rules, so it does **not** measure how well a real model chooses tools or phrases answers. To get those numbers, run `python -m eval.run_eval --provider anthropic` with a key, then record the pass counts and latency from `eval/results/<date>-anthropic.json`.
 
