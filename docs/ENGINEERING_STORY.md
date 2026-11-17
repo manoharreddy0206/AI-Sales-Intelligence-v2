@@ -1,52 +1,69 @@
 # Engineering story
 
-## Interview walkthrough (about 2 minutes)
+Live demo: **https://ai-sales-intelligence-bzg4.onrender.com**
 
-**User problem.** A small-business analyst has an export of orders and wants answers, not a BI tool. They need to know what revenue was last month and what changed, and they need to trust the numbers enough to forward them.
-
-**Request flow.** The browser posts the question to `POST /api/copilot`. The backend sends it to the LLM with three tool definitions. The model picks a tool and passes a period token such as `last_month`. The backend validates the input and resolves the token to exact dates, anchored to the dataset's latest order rather than today. It then calls `analytics.summary`, the same function behind the dashboard cards, which runs a parameterized SQL range query. The tool result goes back to the model so it can write one sentence. The API response contains the sentence, the raw tool payload, any glossary citations, the dataset scope, a request ID and the elapsed time. The UI draws the numbers from the payload.
-
-**Design choice.** The LLM chooses *what* to look up and explains it, but it never produces the figures. Totals come from queries, definitions come from a checked-in glossary with stable IDs, and date arithmetic happens in Python. A guard flags any number in the model's sentence that doesn't match a tool value.
-
-**Tradeoff.** The copilot can only answer what the three tools cover, so open-ended questions get a clarifying question or a polite refusal. In exchange, every number is checkable and an eval can compare it with SQL. I also chose keyword retrieval over embeddings. The glossary has 12 entries, keyword search found the right entry for every eval question, and it adds no vector store to deploy. I'd add embeddings only if an eval showed keyword search missing paraphrases.
-
-## A real bug: Excel text dates were silently reinterpreted
-
-**Where it came from.** I was writing date-handling checks across the CSV and Excel import paths for the hosted demo. This bug was in the v2 code as uploaded. I didn't introduce it.
-
-| | |
-| --- | --- |
-| Input | `backend/tests/fixtures/ambiguous_text_date.xlsx`: one row, `order_id=X1, customer_id=C1, order_date="03/04/2025"` (a text cell, the way many day-first exports in India store dates), `amount=10` |
-| Expected | Rejection. The README contract says dates are `YYYY-MM-DD`, and the CSV path rejects `03/04/2025`. |
-| Observed (v2) | The file was accepted and the order was stored as **2025-03-04** (4 March). A user who meant 3 April gets revenue in the wrong month, with no error shown. |
-| Investigation | The Excel branch ran `pd.to_datetime(frame["order_date"], errors="raise")` on the whole column. Pandas inferred a month-first format from the first value. A second row with `13/04/2025` made the whole file fail with a format error, so the behaviour depended on which rows happened to be present. The CSV path uses `date.fromisoformat`, so the two paths applied different rules to the same field. |
-| Fix | `ingest._excel_date_cell` converts each cell on its own. Real Excel date cells, which arrive as datetimes and are unambiguous, become ISO dates. Text cells pass through unchanged into the same validator the CSV path uses. |
-| Verification | `test_excel_text_dates_follow_the_csv_rule` now gets `UploadError: Invalid data at CSV line 2`. `test_excel_real_date_cells_and_iso_text_are_accepted` shows real date cells and ISO text still import. Running the old Excel logic against the same fixture still stores `2025-03-04`, so the test does catch the v2 behaviour. |
-
-**Why it matters for the copilot.** "What was revenue last month?" is only as right as the stored dates. A silent day/month swap would move revenue between months, and the dashboard and the copilot would both report the wrong figure while agreeing with each other.
-
-## A related design decision: what "last month" means
-
-The sample data ends on 2025-08-23. If "last month" were taken from today's date (November 2026), it would resolve to October 2026 and return zero orders, which is a confusing answer for a historical dataset. Instead, relative periods anchor to the dataset's latest order date. This is the same anchor the segment panel already used for recency. So "last month" means July 2025: 5,722.58 revenue from 29 orders, which matches the July bar on the chart. Every answer states the resolved range and the anchor, and the latest month is flagged as partial. The tradeoff: once a live dataset is updated daily, "last month" follows the data rather than the calendar. That's correct for a dashboard, and it is documented in the glossary entry `[relative-periods]`.
-
-All results above come from synthetic data. The fault-injection result (failure mid-import, full rollback) used a SQLite trigger that aborts on a chosen row, and was not a real crash.
+The public demo loads **269 synthetic orders** (60 customers, 1 Jan to 23 Aug 2025), **blocks uploads** (`POST /api/upload` returns 403), and runs the copilot in **stub mode**: a labelled, rule-based provider with no language model. Every answer carries an orange *Stub mode · no LLM* badge.
 
 ## 90-second demo script
 
-1. **0:00.** "This is a sales dashboard for someone with an order export and no data team." Show the empty dashboard.
-2. **0:10.** Upload `sample_sales.csv`. "269 orders validated and imported in one transaction." Point at the cards (revenue 54,233.7, 269 orders, 60 customers) and the monthly chart.
-3. **0:25.** Upload `sample_updates.csv`. "Re-uploading updates orders by ID: 5 added, 10 updated, 5 unchanged." Upload `sample_invalid.csv`. "One bad row rejects the whole file, so stored data never ends up half-imported."
-4. **0:40.** In the copilot, click *What was revenue last month?* "The model picked a typed tool, and the backend resolved 'last month' to July 2025 from the data. This table comes from the tool result, and it matches the July bar." *(If you show this after step 3, the July total includes the updated orders. Show it on fresh sample data to get 5,722.58.)*
-5. **0:55.** Click *What changed versus the previous month?* "Revenue, orders and average order value for both months, with deltas computed by the backend. When the previous month is empty, the percent change says 'not defined' instead of infinity."
-6. **1:10.** Click *How is a repeat customer defined?* "Definitions come from a glossary in the repo, cited by ID and linked to the code that implements them."
-7. **1:20.** "I evaluated it with 24 questions against independent SQL, including failures and a prompt-injection case. The README has the commands and the results."
+Open the live URL before the call. The free Render instance sleeps when idle, and the first request can take about 50 seconds to wake it.
 
-## Résumé bullets and the evidence behind them
+| Time | Show | Say | File to open if asked |
+| --- | --- | --- | --- |
+| 0:00 | Dashboard header and the demo banner | "A sales dashboard for someone with an order export and no data team. This public copy is seeded with 269 synthetic orders, and uploads are switched off." | [backend/app/main.py](../backend/app/main.py) (`DEMO_MODE`, `lifespan`, `upload`) |
+| 0:10 | Cards: revenue 54,233.7, 269 orders, 60 customers, average 201.61. Then the monthly chart. | "Every figure is a parameterized SQL query over SQLite. The same function feeds the cards and the copilot." | [backend/app/analytics.py](../backend/app/analytics.py) (`summary`) |
+| 0:25 | Copilot: click *What was revenue last month?* | "The backend resolves 'last month' from the data, not from today's date, so it's July 2025. The table comes from the tool result, not from model text: 5,722.58 from 29 orders, which matches the July bar." | [backend/app/copilot/tools.py](../backend/app/copilot/tools.py) (`get_revenue_summary`) |
+| 0:40 | Click *What changed versus the previous month?* | "The backend computes the deltas. If the earlier month were empty, the percent change would say 'not defined' rather than infinity." | [backend/app/copilot/tools.py](../backend/app/copilot/tools.py) (`compare_periods`) |
+| 0:50 | Click *How is a repeat customer defined?* | "Definitions are retrieved from a glossary in the repo and cited by ID. Each entry also points to the code that implements it." | [backend/glossary/metrics_glossary.md](../backend/glossary/metrics_glossary.md) |
+| 1:00 | Point at the orange badge | "This is stub mode. With an Anthropic key, Claude chooses the tools through the Messages API, but it still can't produce the figures itself." | [backend/app/copilot/provider.py](../backend/app/copilot/provider.py), [backend/app/copilot/service.py](../backend/app/copilot/service.py) |
+| 1:10 | GitHub: the Excel regression test | "A real bug I found: an Excel text date, 03/04/2025, was silently stored as 4 March. Here's the test that pins the fix." | [backend/tests/test_ingest.py](../backend/tests/test_ingest.py) (`test_excel_text_dates_follow_the_csv_rule`) |
+| 1:20 | GitHub Actions: the latest green run | "CI runs the unit and HTTP tests, a 24-case copilot eval, the frontend build and a Docker smoke test on every push." | [.github/workflows/ci.yml](../.github/workflows/ci.yml), [backend/eval/questions.jsonl](../backend/eval/questions.jsonl) |
 
-- **Built a React and FastAPI sales intelligence app that validates and imports CSV and Excel orders in one transaction. It imported 269 synthetic transactions, updated existing orders by ID (5 added, 10 updated and 5 unchanged on re-upload), and rejected invalid files without partial writes.**
-  Evidence: `backend/tests/test_ingest.py` (`test_sample_then_changed_reupload_then_invalid`, `test_failure_mid_import_rolls_back_everything`) and the import table in `docs/EVALUATION.md`.
+**If they want to see uploads**, run it locally (see the README quick start). Upload `backend/sample_sales.csv`, then `sample_updates.csv` (5 added, 10 updated, 5 unchanged), then `sample_invalid.csv`, which is rejected at line 6 with nothing stored.
 
-- **Added a sales copilot with typed read-only analytics tools and cited retrieval over metric definitions. Verified 12/12 numeric answers against SQL and the dashboard, and 6/6 citations, in a 24-case evaluation that includes provider failures and a prompt-injection case (stub provider; real-LLM run pending).**
-  Evidence: `backend/eval/run_eval.py`, `backend/eval/questions.jsonl`, `backend/eval/results/2026-11-17-stub.json` and `backend/tests/test_copilot.py`. Once you run the eval with `--provider anthropic`, replace "stub provider; real-LLM run pending" with the real pass counts and median latency.
+## Request flow
 
-Hold off on the word "deployed" until the Render URL passes `scripts/smoke_test.py` from a fresh browser.
+The browser posts the question to `POST /api/copilot`. [service.py](../backend/app/copilot/service.py) sends it to the provider together with three tool schemas. The provider picks a tool and passes a period token such as `last_month`. The backend validates the input with Pydantic and resolves the token to exact dates, anchored to the dataset's latest order. It then calls `analytics.summary`, the function behind the dashboard cards. The tool result goes back to the provider so it can write one sentence. The response contains that sentence, the raw tool payload, any glossary citations, the dataset scope, a request ID and the elapsed time. The UI renders the numbers from the payload.
+
+**Design choice.** The model decides *what* to look up and explains the result, but it never produces the figures. Totals come from queries, definitions come from a checked-in glossary with stable IDs, and date arithmetic happens in Python. A guard flags any number in the model's sentence that doesn't match a tool value.
+
+**Tradeoff.** The copilot can only answer what three tools cover, so open-ended questions get a clarifying question or a refusal. In return, every number can be checked against SQL. Retrieval is keyword-based rather than embeddings: the glossary has 12 entries, keyword search found the right entry for every eval question, and there is no vector store to deploy.
+
+## Anthropic integration
+
+- **Provider.** [provider.py](../backend/app/copilot/provider.py) `AnthropicProvider` calls the Anthropic Messages API (`/v1/messages`, `anthropic-version: 2023-06-01`) with tool definitions. It uses only the standard-library HTTP client, so there is no SDK dependency. The default model is `claude-haiku-5-5`, and `COPILOT_MODEL` overrides it.
+- **Selection.** `_provider()` in [service.py](../backend/app/copilot/service.py) uses Anthropic when `ANTHROPIC_API_KEY` is set, and the stub otherwise. Setting `COPILOT_PROVIDER=stub` forces stub mode. The key is read on the server only and never reaches the browser.
+- **Stub provider.** `StubProvider` emits the same `tool_use` and `text` blocks as the real API, so the same tool loop, validation, guards and UI run without a key. The UI labels it on every answer.
+- **Limits.** Each question gets at most 4 tool calls and 4 model turns, a 20 s provider timeout and a 30 s overall deadline. Questions are capped at 500 characters, and demo mode allows 30 questions per client per 10 minutes. On a provider error, the API returns an explicit message plus any figures already fetched. Error bodies aren't echoed back, because they can contain request content.
+- **Status: real-model evaluation is pending.** The same 24-case eval runs against Claude with `python -m eval.run_eval --provider anthropic`, but it hasn't been run yet, because no API key has been configured for this project. Every copilot result reported so far uses the stub provider. The stub measures the tools, period resolution, citations, guards and fault handling. It does not measure how well a model chooses tools or phrases answers.
+
+## The Excel date bug and its regression test
+
+**Where it came from.** I found it while writing date-handling checks across the CSV and Excel import paths for the hosted demo. The bug was already in the v2 code.
+
+| | |
+| --- | --- |
+| Input | [backend/tests/fixtures/ambiguous_text_date.xlsx](../backend/tests/fixtures/ambiguous_text_date.xlsx): one row, `order_id=X1, customer_id=C1, order_date="03/04/2025"` stored as a **text** cell (common in day-first exports), `amount=10` |
+| Expected | Rejection. The import contract says dates are `YYYY-MM-DD`, and the CSV path already rejects `03/04/2025`. |
+| Observed in v2 | The file was accepted and the order was stored as **2025-03-04** (4 March). A user who meant 3 April got that revenue in the wrong month, with no error. |
+| Cause | The Excel branch ran `pd.to_datetime(...)` over the whole `order_date` column, and pandas inferred a month-first format from the first value. Adding a second row with `13/04/2025` made the whole file fail instead, so the outcome depended on which rows happened to be present. The CSV path used `date.fromisoformat`, so the two paths applied different rules to the same field. |
+| Fix | [`ingest._excel_date_cell`](../backend/app/ingest.py) converts each cell on its own. Real Excel date cells arrive as datetimes and are unambiguous, so they become ISO dates. Text cells pass through unchanged into the same validator the CSV path uses. |
+| Regression tests | [backend/tests/test_ingest.py](../backend/tests/test_ingest.py): `test_excel_text_dates_follow_the_csv_rule` and `test_excel_real_date_cells_and_iso_text_are_accepted`. Both run in CI on every push. |
+
+```python
+def test_excel_text_dates_follow_the_csv_rule():
+    # Regression: v2 parsed the text "03/04/2025" as 2025-03-04 (month-first) and stored it.
+    raw = xlsx([{"order_id": "X1", "customer_id": "C1", "order_date": "03/04/2025", "amount": 10}])
+    with pytest.raises(ingest.UploadError, match="line 2"):
+        ingest.parse_upload("orders.xlsx", raw)
+```
+
+The companion test checks that the fix didn't overcorrect: a real date cell `datetime(2025, 4, 3)` imports as `2025-04-03`, and ISO text `2025-04-05` still imports. Running the old Excel logic against the same input stores `2025-03-04`, so the first test fails on the v2 behaviour.
+
+**Why it matters for the copilot.** "What was revenue last month?" is only as right as the stored dates. A silent day/month swap moves revenue between months, and the dashboard and the copilot would both report the wrong figure while agreeing with each other. A consistency check between them can't catch that; only a test on the input path can.
+
+## A related decision: what "last month" means
+
+The sample data ends on 2025-08-23. Measured from today's date, "last month" would land in 2026 and return zero orders. Relative periods therefore anchor to the dataset's latest order date, the same anchor the segment panel uses for recency. So "last month" means July 2025, and every answer states the resolved range and the anchor date. The tradeoff: on a dataset updated daily, "last month" follows the data rather than the calendar. This is documented in the glossary entry `[relative-periods]`.
+
+All data in this project is synthetic. The fault-injection check (a failure mid-import followed by a full rollback) uses a SQLite trigger that aborts on a chosen row; it is not a real crash.

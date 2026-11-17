@@ -19,9 +19,9 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -64,13 +64,13 @@ jobs:
           import glob, json
           s = json.load(open(sorted(glob.glob("eval-ci-results/*-stub.json"))[-1]))["summary"]
           lat = s["latency_ms"]
-          print(f"::notice title=Copilot eval (stub provider, no LLM)::{s['passed']}/{s['cases']} cases; numeric {s['numeric_passed']}/{s['numeric_total']}; citations {s['citation_passed']}/{s['citation_total']}; latency median {lat['median']} ms, p95 {lat['p95']} ms (in-process, no network)")
+          print(f"::notice title=Copilot eval (stub provider - no LLM)::{s['passed']}/{s['cases']} cases; numeric {s['numeric_passed']}/{s['numeric_total']}; citations {s['citation_passed']}/{s['citation_total']}; latency median {lat['median']} ms, p95 {lat['p95']} ms (in-process, no network)")
           EOF
           exit $status
 
       - name: Upload test and eval reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: backend-reports
           path: |
@@ -84,9 +84,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build image
         run: docker build -t ai-sales-intelligence:ci .

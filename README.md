@@ -1,42 +1,73 @@
 # AI Sales Intelligence
 
-Upload a CSV or Excel file of sales orders and the app shows revenue, orders, customers and average order value. It also charts monthly revenue, groups customers into simple segments, and tests whether a classifier can predict which customers buy again next month. A built-in **Sales Analyst Copilot** answers questions such as "What was revenue last month?" The figures come from the same database queries the dashboard uses, and metric definitions are cited from a checked-in glossary.
+[![CI](https://github.com/manoharreddy0206/AI-Sales-Intelligence-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/manoharreddy0206/AI-Sales-Intelligence-v2/actions/workflows/ci.yml)
 
-This is an independent portfolio project built with React, TypeScript, FastAPI, SQLite, Pandas, scikit-learn and the Anthropic Messages API. All bundled data is synthetic.
+**Live demo: https://ai-sales-intelligence-bzg4.onrender.com**
 
-## 1. Walkthrough: upload → dashboard → copilot
+A sales analyst uploads a CSV or Excel file of orders and gets revenue, order, customer and average-order metrics, a monthly revenue chart, customer segments, and a repeat-purchase model comparison. A **Sales Analyst Copilot** answers questions such as "What was revenue last month?" Its figures come from the same SQL queries as the dashboard, and metric definitions are cited from a glossary in this repo.
 
-1. **Upload** `backend/sample_sales.csv` (269 synthetic orders, 60 customers, 1 Jan to 23 Aug 2025). The status line reads `Import complete: 269 added / 0 updated / 0 unchanged`.
-2. **Dashboard.** The cards show Revenue **54,233.7**, Orders **269**, Customers **60** and Average order **201.61**. Below them are monthly revenue, segments, a customer explorer, and the model comparison.
+Built with React + TypeScript (Vite), FastAPI, SQLite, pandas, scikit-learn, and the Anthropic Messages API for tool calling.
 
-   ![Dashboard with the seeded synthetic dataset](docs/screenshots/dashboard.png)
+> **About the public demo.** It loads **269 synthetic orders** (60 customers, 1 Jan to 23 Aug 2025), **blocks uploads** (the upload endpoint returns 403), and runs the copilot in **stub mode**: a labelled, rule-based provider with no language model. The Anthropic integration is in the code and switches on when `ANTHROPIC_API_KEY` is set; its evaluation against a real model is **pending**. The free instance sleeps when idle, so the first request can take about 50 seconds.
 
-3. **Copilot.** Click *What was revenue last month?* The answer covers July 2025: revenue 5,722.58 from 29 orders. That matches the July bar on the chart. The *From the database* table is drawn from the tool result, not from the model's text. A definition answer shows its glossary source ID, such as `[repeat-purchase]`.
+![Dashboard on the live demo: revenue 54,233.7, 269 orders, 60 customers](docs/screenshots/dashboard.png)
 
-   ![Copilot answering three questions (stub mode)](docs/screenshots/copilot.png)
+## Demo walkthrough (live site)
 
-   *These screenshots were captured in **stub mode** (no LLM key), which the orange badge shows. With `ANTHROPIC_API_KEY` set, a model chooses the tools and writes the sentence, and the badge shows the model name.*
+1. **Dashboard.** The banner says the data is a seeded synthetic dataset. The cards show revenue **54,233.7**, **269** orders, **60** customers and an average order of **201.61**. Below are monthly revenue, customer segments, a customer explorer and the model comparison.
+2. **Ask the copilot** *What was revenue last month?* It answers for **July 2025: 5,722.58 from 29 orders**. "Last month" is measured from the latest order in the data (2025-08-23), not from today. The *From the database* table comes from the tool result, and it matches the July bar on the chart.
+3. **Ask** *What changed versus the previous month?* The backend computes July against June 2025: revenue −277.89 (−4.63%), orders −2, and average order +3.77.
+4. **Ask** *How is a repeat customer defined?* The answer quotes the glossary entry and cites it as `[repeat-purchase]`, along with the code that implements it.
+5. **Notice the orange *Stub mode · no LLM* badge** on every answer. With an API key, Claude picks the tools and writes the sentence, but the figures still come from the tools.
 
-**Live demo:** not deployed yet. See [Deploy](#deploy). API docs are served at `/docs` on any running backend.
+![Copilot on the live demo answering three questions in stub mode](docs/screenshots/copilot.png)
 
-## 2. Quick start
+To try uploads, re-uploads and validation errors, run the app locally (below).
 
-Requirements: Python 3.12 and Node.js 22. The repository includes a Codespaces dev-container configuration.
+## Architecture
 
-**Backend** (terminal 1, from the repository root):
+```
+Browser: React + Vite (frontend/src)
+  │  /api/*
+  ▼
+FastAPI (backend/app/main.py)
+  ├─ ingest.py      validate CSV/Excel → one transaction → upsert by order_id
+  ├─ analytics.py   summary(start, end): parameterized SQL → cards and chart
+  ├─ comparison.py  pandas features → scikit-learn models vs a majority baseline
+  └─ copilot/service.py   tool loop with limits, numeric guard, request logging
+        ├─ provider.py   AnthropicProvider (Messages API) | StubProvider (no LLM)
+        └─ tools.py      get_revenue_summary, compare_periods ──► analytics.summary
+                         search_metric_glossary ──► glossary/metrics_glossary.md
+  ▼
+SQLite (orders, uploads)
+```
+
+- **Numbers come from queries.** The model can call only three typed, read-only tools. Pydantic validates their inputs and refuses unknown tools or extra fields. Both revenue tools call `analytics.summary`, the same function behind the dashboard cards. The model passes a period token such as `last_month` or `2025-07`, and Python does the date arithmetic. If the model's sentence contains a number that no tool returned, the UI flags it.
+- **Definitions come from retrieval.** [backend/glossary/metrics_glossary.md](backend/glossary/metrics_glossary.md) holds each definition with a stable ID and the code location it describes. Keyword retrieval returns passages, and the copilot cites their IDs. A term with no entry returns "no glossary entry" rather than a made-up definition.
+- **Provider choice.** With `ANTHROPIC_API_KEY` set, [provider.py](backend/app/copilot/provider.py) calls the Anthropic Messages API (default model `claude-haiku-5-5`) using only the standard-library HTTP client. Without a key, `StubProvider` emits the same tool calls from keyword rules, so the whole tool loop and UI still run, and every answer is labelled.
+- **Guardrails.** Each question gets at most 4 tool calls and 4 model turns, a 20 s provider timeout and a 30 s overall deadline. Questions are capped at 500 characters, and demo mode allows 30 questions per client per 10 minutes. Logs record the request ID, tool names, outcomes and elapsed time, but not the question text or any order rows.
+- **Imports are all-or-nothing.** A file is validated in full and written in a single transaction. One bad row rejects the file, and re-uploading an existing `order_id` updates it in place.
+
+The [engineering story](docs/ENGINEERING_STORY.md) has a 90-second demo script and a real bug with its regression test. The [evaluation notes](docs/EVALUATION.md) have the full results.
+
+## Run it locally
+
+Requirements: Python 3.12 and Node.js 22. The repo also includes a Codespaces dev container.
+
+**1. Backend** (terminal 1, from the repository root):
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install --only-binary=:all: -r requirements.txt
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Expected: `Uvicorn running on http://0.0.0.0:8000`. Run `curl http://localhost:8000/api/health` to get `{"status":"ok","orders":0,"demo_mode":false,"copilot_mode":"stub"}`.
+Check it: `curl http://localhost:8000/api/health` should return `{"status":"ok","orders":0,"demo_mode":false,"copilot_mode":"stub"}`.
 
-**Frontend** (terminal 2, from the repository root):
+**2. Frontend** (terminal 2, from the repository root):
 
 ```bash
 cd frontend
@@ -44,139 +75,118 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:5173. Vite proxies `/api` to port 8000. Upload `backend/sample_sales.csv` and check the numbers in the walkthrough above.
+Open http://localhost:5173. Vite proxies `/api` to port 8000.
 
-**Sample data.** `python generate_sample.py` (run from `backend/`) rebuilds three seeded files deterministically:
+**3. Try the import path** with the files in `backend/`:
 
-| File | Rows | What it tests |
+| Upload in this order | Rows | Expected result |
 | --- | --- | --- |
-| `sample_sales.csv` | 269 | Normal import |
-| `sample_updates.csv` | 20 | Re-upload: 10 existing orders with changed amounts, 5 unchanged, 5 new |
-| `sample_invalid.csv` | 5 | 4 valid rows, then a negative amount. The whole file is rejected. |
+| `sample_sales.csv` | 269 | `Import complete: 269 added / 0 updated / 0 unchanged` |
+| `sample_updates.csv` | 20 | 5 added, 10 updated, 5 unchanged; 274 orders stored |
+| `sample_invalid.csv` | 5 | Rejected at line 6 (negative amount); still 274 stored |
 
-**Environment variables** are all optional and read by the backend only. See [.env.example](.env.example).
+`python generate_sample.py` (run from `backend/`) regenerates all three files deterministically.
+
+**Optional: turn on the real model.** Set the key in the backend terminal before starting uvicorn:
+
+```bash
+export ANTHROPIC_API_KEY=...        # PowerShell: $env:ANTHROPIC_API_KEY="..."
+```
+
+**Single container** (the same image the live demo runs):
+
+```bash
+docker build -t sales-intel .
+docker run --rm -p 8000:8000 -e DEMO_MODE=1 sales-intel
+python scripts/smoke_test.py http://localhost:8000
+```
+
+The app is then at http://localhost:8000; FastAPI serves the built React app.
+
+**Environment variables** (all optional, backend only; see [.env.example](.env.example)):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | unset | Turns on real LLM tool calling. Without it, the copilot runs in labelled stub mode. |
-| `COPILOT_PROVIDER` | auto | `anthropic` or `stub` |
+| `ANTHROPIC_API_KEY` | unset | Enables real tool calling. Without it, the copilot runs in labelled stub mode. |
+| `COPILOT_PROVIDER` | auto | `anthropic` or `stub`. Leave unset to choose from whether a key is present. |
 | `COPILOT_MODEL` | `claude-haiku-5-5` | Anthropic model ID |
 | `DEMO_MODE` | `0` | `1` seeds the sample into an empty database and disables uploads |
 | `SALES_DB` | `backend/sales.db` | SQLite file location |
 
-To turn the copilot on, set the key in the backend terminal before starting uvicorn:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...          # PowerShell: $env:ANTHROPIC_API_KEY="sk-ant-..."
-# or load a filled-in .env:  set -a; source ../.env; set +a
-```
-
-**Single container** (the same image the hosted demo uses):
-
-```bash
-docker build -t sales-intel .
-docker run --rm -p 8000:8000 -e DEMO_MODE=1 -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY sales-intel
-python scripts/smoke_test.py http://localhost:8000
-```
-
-The dashboard is at http://localhost:8000, served by FastAPI from the built React app.
-
-## 3. How the pieces fit
-
-```
-React (Vite) ──/api──► FastAPI ──► app/analytics.py ──► SQLite (orders, uploads)
-   │                      │            ▲
-   │                      ├─► app/ingest.py (validate + transactional upsert)
-   │                      ├─► app/comparison.py (Pandas features → scikit-learn models)
-   └─ Copilot panel ──────┴─► app/copilot/service.py ──► Anthropic Messages API (tool calling)
-                                   │
-                                   ├─ tools.py: get_revenue_summary, compare_periods  → analytics.summary
-                                   └─ tools.py: search_metric_glossary → glossary/metrics_glossary.md
-```
-
-- **Numbers come from queries.** The model can only call three typed, read-only tools. Their inputs are validated with Pydantic, and unknown tools and extra fields are refused. Both revenue tools call `analytics.summary`, the same function behind the dashboard cards, using parameterized SQL. The model passes period tokens such as `last_month` or `2025-07`, and the backend does the date arithmetic. The UI renders figures from the tool payload. If the model's sentence contains a number that matches no tool value, it is flagged on screen.
-- **Definitions come from retrieval.** [backend/glossary/metrics_glossary.md](backend/glossary/metrics_glossary.md) holds each definition with a stable ID and the code location it describes. Simple keyword retrieval returns passages, and the copilot cites their IDs. A term with no entry returns "no glossary entry" rather than a definition from general knowledge.
-- **"Last month" is anchored to the data.** Relative periods resolve against the dataset's latest order date (2025-08-23 for the sample), which is the same anchor the segment panel uses. Every answer states the exact date range.
-- **Guardrails.** At most 4 tool calls and 4 model turns per question, a 20 s provider timeout, a 30 s overall deadline, and questions capped at 500 characters. In demo mode, each client is limited to 30 questions per 10 minutes. Each request logs its ID, tool names with outcomes, and elapsed time, but not the question text or any order rows.
-
-## 4. Tests, evaluation and limits
+## Tests and evaluation
 
 ```bash
 cd backend
-python -m pytest -q                 # unit + HTTP tests
-python -m eval.run_eval             # 24-question copilot eval, stub provider (no LLM)
-python -m eval.run_eval --provider anthropic   # same eval against the real model (needs the key)
-python -m eval.classifier_report    # classifier vs majority baseline on the chronological holdout
-```
+python -m pytest -q                             # unit + FastAPI HTTP tests
+python -m eval.run_eval                         # 24-case copilot eval, stub provider
+python -m eval.run_eval --provider anthropic    # same eval on the real model (needs the key)
+python -m eval.classifier_report                # classifier vs majority baseline
 
-```bash
-cd frontend
+cd ../frontend
 npx tsc --noEmit
 npm run build
 ```
 
-**Measured on 2026-11-17** (commit `03ece79`, Linux, Python 3.13, pandas 3.0.5, scikit-learn 1.9.1). The pinned requirements specify pandas 2.2.3 and scikit-learn 1.6.1. FastAPI couldn't be installed in that environment. Details are in [docs/EVALUATION.md](docs/EVALUATION.md).
+[GitHub Actions](.github/workflows/ci.yml) runs all of this except the classifier report and the real-model eval on every push and pull request. CI also builds the Docker image, runs it in demo mode, and checks it with `scripts/smoke_test.py`.
+
+**Verified results (2026-11-17)**
 
 | Check | Result |
 | --- | --- |
-| pytest | 41 passed. The 3 FastAPI `TestClient` modules were **skipped**, not run. |
-| Copilot eval, stub provider | 24/24 cases. Numeric 12/12 against independent SQL and the dashboard function. Citations 6/6. Median latency 2 ms (no network). |
-| Copilot eval, real Anthropic model | **Not run yet** (no key in the test environment) |
-| Import: sample → updates → invalid | 269 rows in, 269 stored. Re-upload: 20 rows, giving 5 added, 10 updated, 5 unchanged, and 274 stored. Invalid file rejected at line 6, 274 still stored. |
-| Failure injected mid-import | Full rollback: no partial rows and no upload record |
-| Classifier, test cutoff 2025-06, 60 customers | Validation picked the **majority baseline**. Repeat-buyer F1 is 0.636 for the baseline. As a diagnostic, logistic regression scored 0.629 and random forest 0.483. |
+| pytest in CI (Python 3.12, Ubuntu, pinned requirements) | **46 passed, 0 failed, 0 skipped**. The FastAPI HTTP tests run; CI fails if any test is skipped. |
+| Copilot eval in CI, stub provider | **24/24** cases. Numeric 12/12 against independent SQL and the dashboard function; citations 6/6; median 1.0 ms in-process. |
+| Copilot eval, real Anthropic model | **Pending**: no API key configured yet |
+| Frontend in CI | `tsc --noEmit` and the Vite build pass; `npm audit` reports 0 vulnerabilities |
+| Docker image in CI | Builds; smoke test passes; upload returns 403 in demo mode |
+| Live demo | `smoke_test.py` 6/6 passed. Copilot revenue equals dashboard revenue for July 2025 (5,722.58); upload returns 403. |
+| Excel date regression | `test_excel_text_dates_follow_the_csv_rule`: a text date `03/04/2025` in an `.xlsx` file is rejected instead of being stored as 4 March |
+| Classifier, test cutoff 2025-06 | Validation selected the majority baseline (repeat-buyer F1 0.636). Logistic regression scored 0.629 and random forest 0.483 (diagnostic). |
 
 **Known limits**
 
-- On this synthetic data, no learned model beats the "everyone repeats" baseline on F1. The test set is 60 customers with 47% positives, and with that class balance, predicting all-positive already scores F1 0.636. Treat the model panel as an evaluation harness, not a business result.
-- The stub-provider eval exercises tools, period resolution, citations, guards and fault handling. It does not measure how well a real LLM chooses tools.
-- Analytics read stored orders into memory, and customer pagination happens in the browser. Both suit modest datasets.
-- There is no authentication, no per-user data isolation, and no saved model versions.
-- **Public demo data mode:** with `DEMO_MODE=1`, the app seeds `sample_sales.csv` into an empty database at start-up and `POST /api/upload` returns 403. Visitors therefore all see the same synthetic data, and nobody's file is stored on a shared server.
+- No learned model beats the "everyone repeats" baseline on this synthetic data. With 60 customers and 47% positives, predicting all-positive already scores F1 0.636, so the model panel is an evaluation harness, not a business result.
+- The stub eval tests the tools, period resolution, citations, guards and fault handling. It does not measure how well a real model picks tools or phrases answers.
+- Analytics load stored orders into memory, and the customer table paginates in the browser. Both are fine for modest datasets.
+- There is no authentication, no per-user data isolation and no model versioning. That's why the public demo serves read-only synthetic data.
 
-## 5. Troubleshooting
+## Troubleshooting
 
-- **Upload fails.** The message names the first bad CSV line. Common causes:
-  - dates not in `YYYY-MM-DD` (for Excel, use real date cells or ISO text)
-  - amounts containing `$` or `1,200`-style separators
+- **An upload is rejected.** The message names the first bad line. Common causes:
+  - dates not in `YYYY-MM-DD` (in Excel, use real date cells or ISO text)
+  - amounts containing `$` or thousands separators
   - an empty ID, or the same `order_id` twice in one file
   - a file over 2 MB
 
-  Nothing is stored from a rejected file. In demo mode, uploads are off by design.
-- **The dashboard shows "Failed to fetch" or a JSON error.**
-  - Check that the backend is running: `curl http://localhost:8000/api/health`.
-  - Start the frontend with `npm run dev` from `frontend/` so the `/api` proxy applies.
-  - If the API is on another host, add the frontend's origin to `CORS_ORIGINS`.
-- **The copilot says "The language model is unavailable…".** Either `ANTHROPIC_API_KEY` is missing, or the provider returned an error or took longer than `COPILOT_TIMEOUT_SECONDS`. Figures already fetched by tools still appear. Check the backend log line `copilot_request` for that request ID. To work without a key, unset `COPILOT_PROVIDER` or set it to `stub`.
+  Nothing is stored from a rejected file.
+- **The dashboard shows "Failed to fetch".** Check the backend with `curl http://localhost:8000/api/health`, and start the frontend from `frontend/` with `npm run dev` so the `/api` proxy applies.
+- **The copilot says "The language model is unavailable…".** Either the key is missing or the provider failed or timed out. Figures already fetched still appear. Unset `COPILOT_PROVIDER`, or set it to `stub`, to work without a key.
+- **Windows: NumPy fails with "An Application Control policy has blocked this file".** Smart App Control is blocking an unsigned NumPy DLL. Run the backend in WSL2, Docker or Codespaces, or rely on CI.
 
 ## Deploy
 
-[`render.yaml`](render.yaml) defines one Docker web service on Render with `DEMO_MODE=1` and a `/api/health` check:
+[`render.yaml`](render.yaml) is a Render Blueprint for one Docker web service with `DEMO_MODE=1` and a `/api/health` check. In Render, choose **New → Blueprint**, select this repository, and apply it. Leave `ANTHROPIC_API_KEY` empty for stub mode, or set it to enable the real model. Then verify with `python scripts/smoke_test.py https://ai-sales-intelligence-bzg4.onrender.com`.
 
-1. Push this repository to GitHub.
-2. In Render, choose **New → Blueprint** and select the repository.
-3. Enter `ANTHROPIC_API_KEY` when prompted.
-4. Once it's live, run `python scripts/smoke_test.py https://<your-service>.onrender.com`.
-
-Storage choice: demo mode re-seeds read-only synthetic data on every start, so the container's ephemeral disk is enough. To accept uploads on a host, the next step is per-session data isolation plus a persistent disk mounted at `/data` (`SALES_DB=/data/sales.db`). The code is SQLite-specific, so that's a smaller change than moving to PostgreSQL. PostgreSQL becomes worth it once you need more than one instance.
+Demo mode re-seeds read-only synthetic data on every start, so the container's ephemeral disk is enough. Accepting public uploads would need per-session data isolation and a persistent disk at `/data` (`SALES_DB=/data/sales.db`).
 
 ## Reference
 
-**Input data.** The required columns are `order_id,customer_id,order_date,amount`. Extra columns are ignored. Amounts must be greater than 0 and less than 1,000,000,000, and all amounts are assumed to share one unnamed currency. Uploads combine with stored orders, and re-uploading an existing order ID updates that order. One invalid row rejects the whole file. Excel imports read the first worksheet.
+**Input data.** Required columns are `order_id,customer_id,order_date,amount`; extra columns are ignored. Amounts must be greater than 0 and less than 1,000,000,000, and all amounts share one unnamed currency. Excel imports read the first worksheet.
 
-**Segments.** Recency is measured to the latest order date. "At risk" means more than 60 days since the last order. "Loyal" means the customer isn't at risk and has 4 or more orders. "Active" covers everyone else. These are rules, not clustering.
+**Segments.** Recency is measured to the latest order date. "At risk" means more than 60 days since the last order. "Loyal" means not at risk with 4 or more orders. Everyone else is "Active". These are rules, not clustering.
 
-**Model comparison.** The target is whether an existing customer orders in the next calendar month. Features use only orders on or before each month-end cutoff, and a test checks this. Candidates train on earlier cutoffs, a later cutoff picks the winner by F1, and the winner is refit and scored on a final test cutoff next to a refit majority baseline. The newest month is excluded because it may be incomplete. No model is saved or deployed.
+**Model comparison.** The target is whether an existing customer orders in the next calendar month. Features use only orders on or before each month-end cutoff, and a test enforces this. Candidates train on earlier cutoffs, a later cutoff picks the winner by F1, and the winner is scored on a final cutoff next to a majority baseline. The newest month is excluded because it may be incomplete.
 
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /api/upload` | Validate and import CSV or Excel (403 in demo mode) |
-| `GET /api/summary` | Revenue metrics, with optional `start` and `end` (inclusive) |
+| `GET /api/summary` | Revenue metrics, with optional inclusive `start` and `end` |
 | `GET /api/segments` | RFM customer summaries |
 | `GET /api/uploads` | Latest 20 successful imports |
 | `POST /api/compare-models` | Temporal model selection and evaluation |
 | `GET /api/model-report` | Original logistic-regression experiment |
-| `POST /api/copilot` | `{"question": "...", "context": {"start": "...", "end": "..."}}`, returning answer, evidence, citations and request ID |
-| `GET /api/health`, `GET /api/config` | Health check, demo mode and copilot mode |
+| `POST /api/copilot` | `{"question": "...", "context": {"start": "...", "end": "..."}}` → answer, evidence, citations, request ID |
+| `GET /api/health`, `GET /api/config` | Health, demo mode and copilot mode |
 
-More detail: [evaluation notes](docs/EVALUATION.md) · [engineering story](docs/ENGINEERING_STORY.md)
+Interactive API docs are at [`/docs`](https://ai-sales-intelligence-bzg4.onrender.com/docs).
+
+All bundled data is synthetic. This is an independent portfolio project.
