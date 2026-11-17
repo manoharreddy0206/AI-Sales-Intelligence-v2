@@ -1,17 +1,19 @@
 # Evaluation notes
 
-Everything here was measured on **2026-11-17** at commit `03ece79`, in a Linux sandbox with Python 3.13.18, pandas 3.0.5 and scikit-learn 1.9.1. The pinned requirements specify pandas 2.2.3 and scikit-learn 1.6.1, so small numeric differences on the pinned versions are possible. All data is synthetic.
+All data is synthetic. Results below come from GitHub Actions (pinned `backend/requirements.txt` on Python 3.12, Ubuntu) and from the live Render deployment, both on **2026-11-17**, unless a section says otherwise.
 
-## What could and could not run
+## What has been verified
 
-| Item | Status in the test environment |
-| --- | --- |
-| Backend logic, import, analytics, copilot, classifier (pytest) | Run: 41 passed |
-| FastAPI `TestClient` tests (`test_api.py`, `test_v2.py`, `test_api_copilot.py`) | **Skipped.** FastAPI and httpx were not installable (no package network). Run `pytest` after `pip install -r requirements.txt`. |
-| Frontend | Bundled with esbuild against preinstalled React 19 and viewed in headless Chrome. **`vite build` and `tsc --noEmit` were not run** (Vite and `@types/react` were unavailable). |
-| Screenshots | Captured from that bundle. The API was served by a small standard-library adapter that called the same `app.*` functions, because uvicorn+FastAPI were unavailable. |
-| Copilot against a real LLM | **Not run** (no API key or network) |
-| Docker image, hosted URL | **Not built or deployed** (no Docker daemon or hosting account) |
+| Item | Where | Result |
+| --- | --- | --- |
+| Backend pytest, including the three FastAPI `TestClient` modules (`test_api.py`, `test_v2.py`, `test_api_copilot.py`) | GitHub Actions | **46 passed, 0 failed, 0 skipped** in 2.8 s. CI fails the build if any test is skipped. |
+| Copilot eval, stub provider | GitHub Actions | **24/24** cases, numeric 12/12, citations 6/6 |
+| Frontend `npx tsc --noEmit` and `npm run build` (Vite 6.4.6) | GitHub Actions | Pass. `npm audit` reports 0 vulnerabilities. |
+| Docker image in `DEMO_MODE=1` | GitHub Actions | Builds; `scripts/smoke_test.py` passes; `POST /api/upload` returns 403 |
+| Live demo, https://ai-sales-intelligence-bzg4.onrender.com | From a workstation | `smoke_test.py` **6/6**: health, config, 269 orders, copilot revenue equals dashboard revenue (July 2025, 5,722.58), frontend at `/`, API docs at `/docs`. Upload returns 403. |
+| Copilot against a real LLM (Anthropic) | n/a | **Pending.** No API key configured yet. |
+
+CI results are published as annotations on each run, so anyone can read them on the Actions page without signing in.
 
 ## Import checks (`tests/test_ingest.py`)
 
@@ -45,13 +47,15 @@ The cases are in 24 questions in `backend/eval/questions.jsonl`. Ground truth is
 | Glossary passage containing injected instructions, followed by a `run_sql` call | 1 | 1/1 (call refused, row count unchanged, citation kept) |
 | **Total** | **24** | **24/24**. Numeric 12/12, citations 6/6. |
 
-Latency: median 2 ms, p95 6 ms, max 6 ms. This is in-process with no network or LLM, so it says nothing about hosted latency. Raw output is in `backend/eval/results/2026-11-17-stub.json`.
+Latency in CI: median 1 to 2 ms, p95 3 to 4 ms across runs. This is in-process with no network or LLM, so it says nothing about real-model latency. On the live demo, stub answers took 3 to 5 ms server-side. CI uploads the raw JSON as the `backend-reports` artifact, and an earlier local run is checked in at `backend/eval/results/2026-11-17-stub.json`.
 
 **What the stub run measures.** It tests the tool layer, period resolution, the agreement between dashboard and copilot, citations, the numeric guard and fault handling. The stub picks tools with keyword rules, so it does **not** measure how well a real model chooses tools or phrases answers. To get those numbers, run `python -m eval.run_eval --provider anthropic` with a key, then record the pass counts and latency from `eval/results/<date>-anthropic.json`.
 
 **Issue the eval found.** On the first run, 23/24 passed. *How are sales doing recently?* was routed to the glossary, because the stub treated "how are" as a definition question. The stub's definition rule now requires a verb such as *defined*, *mean* or *calculated*. The fix applies only to the stub and doesn't touch the hosted LLM path.
 
 ## Classifier (`python -m eval.classifier_report`)
+
+These figures come from an earlier run with Python 3.13, pandas 3.0.5 and scikit-learn 1.9.1, not from the pinned versions (pandas 2.2.3, scikit-learn 1.6.1), so small numeric differences are possible. CI runs the classifier's unit tests, including the leakage check, but not this report.
 
 | Item | Value |
 | --- | --- |
