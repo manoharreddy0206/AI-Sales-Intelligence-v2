@@ -7,3 +7,5 @@ __pycache__/
 node_modules/
 dist/
 .env
+backend/eval/results/*.json
+!backend/eval/results/*-stub.json

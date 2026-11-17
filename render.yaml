@@ -1,0 +1,18 @@
+# Render Blueprint for the public demo (Docker web service).
+# Public demo mode seeds the synthetic dataset on start and disables uploads,
+# so the container's ephemeral disk is enough; no persistent volume is attached.
+services:
+  - type: web
+    name: ai-sales-intelligence
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DEMO_MODE
+        value: "1"
+      - key: COPILOT_PROVIDER
+        value: anthropic
+      - key: COPILOT_MODEL
+        value: claude-haiku-5-5
+      - key: ANTHROPIC_API_KEY
+        sync: false   # set in the Render dashboard; never commit it

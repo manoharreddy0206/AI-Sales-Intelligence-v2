@@ -1,134 +1,91 @@
-import csv
-import io
+import logging
 import os
-import sqlite3
-import pandas as pd
-from datetime import datetime, timezone
-from collections import defaultdict
+import threading
+import time
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
+from . import analytics, ingest
+from .copilot import service as copilot
 from .model import evaluate_repeat_purchase
 
-DB_PATH = Path(os.environ.get("SALES_DB", str(Path(__file__).resolve().parents[1] / "sales.db")))
-app = FastAPI(title="AI Sales Intelligence")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = Path(os.environ.get("SALES_DB", str(BACKEND_DIR / "sales.db")))
+DEMO_MODE = os.environ.get("DEMO_MODE", "").lower() in {"1", "true", "yes"}
+SEED_CSV = Path(os.environ.get("SEED_CSV", str(BACKEND_DIR / "sample_sales.csv")))
+FRONTEND_DIST = Path(os.environ.get("FRONTEND_DIST", str(BACKEND_DIR.parent / "frontend" / "dist")))
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+COPILOT_RATE_LIMIT = int(os.environ.get("COPILOT_RATE_LIMIT_PER_10_MIN", "30"))
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+log = logging.getLogger("sales")
 
 
-def connect():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    db.execute("CREATE TABLE IF NOT EXISTS orders (order_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, order_date TEXT NOT NULL, amount REAL NOT NULL)")
-    db.execute("CREATE TABLE IF NOT EXISTS uploads (id INTEGER PRIMARY KEY, filename TEXT, created_at TEXT, added INTEGER, updated INTEGER, unchanged INTEGER)")
-    return db
+@asynccontextmanager
+async def lifespan(_app):
+    if DEMO_MODE:
+        seeded = ingest.seed_if_empty(DB_PATH, SEED_CSV)
+        log.info("demo mode: %s", f"seeded {seeded['added']} orders" if seeded else "database already populated")
+    yield
+
+
+app = FastAPI(title="AI Sales Intelligence", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
 def read_orders():
-    with connect() as db:
-        return [dict(row) for row in db.execute("SELECT * FROM orders ORDER BY order_date, order_id")]
+    return analytics.read_orders(DB_PATH)
 
 
-def parse_csv(raw: bytes):
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, "CSV must be UTF-8") from exc
-    reader = csv.DictReader(io.StringIO(text))
-    required = {"order_id", "customer_id", "order_date", "amount"}
-    if not reader.fieldnames or not required.issubset(reader.fieldnames):
-        raise HTTPException(400, f"Required columns: {', '.join(sorted(required))}")
-    parsed = []
-    seen = set()
-    for line, row in enumerate(reader, start=2):
-        try:
-            oid, cid = row["order_id"].strip(), row["customer_id"].strip()
-            day = date.fromisoformat(row["order_date"].strip()).isoformat()
-            amount = float(row["amount"])
-            if not oid or not cid or oid in seen or not (0 < amount < 1_000_000_000):
-                raise ValueError("empty ID, duplicate order ID, or invalid amount")
-            seen.add(oid)
-            parsed.append((oid, cid, day, amount))
-        except (ValueError, TypeError, AttributeError, KeyError) as exc:
-            raise HTTPException(400, f"Invalid data at CSV line {line}: {exc}") from exc
-    if not parsed:
-        raise HTTPException(400, "CSV has no data rows")
-    return parsed
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "orders": ingest.order_count(DB_PATH), "demo_mode": DEMO_MODE, "copilot_mode": copilot.provider_mode()}
+
+
+@app.get("/api/config")
+def config():
+    return {"demo_mode": DEMO_MODE, "uploads_enabled": not DEMO_MODE, "copilot_mode": copilot.provider_mode(), "copilot_model": copilot.provider_model()}
 
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    if not file.filename or not file.filename.lower().endswith((".csv", ".xlsx")):
-        raise HTTPException(400, "Choose a .csv or .xlsx file")
-    raw = await file.read(2_000_001)
-    if len(raw) > 2_000_000:
-        raise HTTPException(413, "Maximum CSV size is 2 MB")
-    if file.filename.lower().endswith('.xlsx'):
-        try:
-            frame = pd.read_excel(io.BytesIO(raw), dtype={"order_id": str, "customer_id": str})
-            if 'order_date' in frame:
-                frame['order_date'] = pd.to_datetime(frame['order_date'], errors='raise').dt.strftime('%Y-%m-%d')
-            raw = frame.to_csv(index=False).encode()
-        except Exception as exc:
-            raise HTTPException(400, 'Cannot read Excel. Use the first sheet and required columns.') from exc
-    rows = parse_csv(raw)
-    with connect() as db:
-        db.execute('BEGIN IMMEDIATE')
-        added = updated = unchanged = 0
-        for row in rows:
-            existing = db.execute('SELECT * FROM orders WHERE order_id=?', (row[0],)).fetchone()
-            if existing is None:
-                added += 1
-            elif tuple(existing) == row:
-                unchanged += 1
-            else:
-                updated += 1
-        db.executemany("INSERT INTO orders VALUES (?, ?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET customer_id=excluded.customer_id, order_date=excluded.order_date, amount=excluded.amount", rows)
-        db.execute('INSERT INTO uploads(filename,created_at,added,updated,unchanged) VALUES(?,?,?,?,?)', (Path(file.filename).name, datetime.now(timezone.utc).isoformat(), added, updated, unchanged))
-    return {"accepted_rows": len(rows), "added": added, "updated": updated, "unchanged": unchanged, "message": "Upload complete"}
+    if DEMO_MODE:
+        raise HTTPException(403, "Uploads are disabled in the public demo, which uses a seeded synthetic dataset. Run locally to upload files.")
+    raw = await file.read(ingest.MAX_BYTES + 1)
+    try:
+        rows = ingest.parse_upload(file.filename, raw)
+    except ingest.UploadError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    return ingest.import_rows(DB_PATH, rows, file.filename)
 
 
-@app.get('/api/uploads')
+@app.get("/api/uploads")
 def uploads():
-    with connect() as db:
-        return [dict(r) for r in db.execute('SELECT * FROM uploads ORDER BY id DESC LIMIT 20')]
+    from .storage import connect
+    with connect(DB_PATH) as db:
+        return [dict(r) for r in db.execute("SELECT * FROM uploads ORDER BY id DESC LIMIT 20")]
 
 
 @app.get("/api/summary")
 def summary(start: date | None = None, end: date | None = None):
-    if start and end and start > end:
-        raise HTTPException(400, 'Start date must precede end date')
-    rows = [r for r in read_orders() if (not start or r['order_date'] >= start.isoformat()) and (not end or r['order_date'] <= end.isoformat())]
-    monthly = defaultdict(float)
-    for row in rows:
-        monthly[row["order_date"][:7]] += row["amount"]
-    revenue = round(sum(r['amount'] for r in rows), 2)
-    return {"orders": len(rows), "customers": len({r["customer_id"] for r in rows}), "revenue": revenue, "average_order": round(revenue / len(rows), 2) if rows else 0, "monthly": [{"month": k, "revenue": round(v, 2)} for k, v in sorted(monthly.items())]}
+    try:
+        return analytics.summary(DB_PATH, start, end)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/segments")
 def segments():
-    rows = read_orders()
-    if not rows:
-        return {"as_of": None, "counts": {}, "customers": []}
-    as_of = max(date.fromisoformat(r["order_date"]) for r in rows)
-    groups = defaultdict(list)
-    for row in rows:
-        groups[row["customer_id"]].append(row)
-    result = []
-    for cid, orders in sorted(groups.items()):
-        recency = (as_of - max(date.fromisoformat(o["order_date"]) for o in orders)).days
-        frequency = len(orders)
-        monetary = round(sum(o["amount"] for o in orders), 2)
-        segment = "At risk" if recency > 60 else "Loyal" if frequency >= 4 else "Active"
-        result.append({"customer_id": cid, "recency_days": recency, "frequency": frequency, "monetary": monetary, "segment": segment})
-    counts = {name: sum(c["segment"] == name for c in result) for name in ("Active", "Loyal", "At risk")}
-    return {"as_of": as_of.isoformat(), "counts": counts, "customers": result}
+    return analytics.segments(DB_PATH)
 
 
-@app.post('/api/compare-models')
+@app.post("/api/compare-models")
 def compare_models():
     from .comparison import compare
     return compare(read_orders())
@@ -137,3 +94,46 @@ def compare_models():
 @app.get("/api/model-report")
 def model_report():
     return evaluate_repeat_purchase(read_orders())
+
+
+class CopilotContext(BaseModel):
+    start: date | None = None
+    end: date | None = None
+
+
+class CopilotRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=copilot.MAX_QUESTION_CHARS)
+    context: CopilotContext | None = None
+
+
+_hits: dict[str, deque] = defaultdict(deque)
+_hits_lock = threading.Lock()
+
+
+def _rate_limited(client: str) -> bool:
+    """Per-client sliding window; only enforced in the public demo."""
+    if not DEMO_MODE:
+        return False
+    now = time.monotonic()
+    with _hits_lock:
+        window = _hits[client]
+        while window and now - window[0] > 600:
+            window.popleft()
+        if len(window) >= COPILOT_RATE_LIMIT:
+            return True
+        window.append(now)
+    return False
+
+
+@app.post("/api/copilot")
+def copilot_answer(body: CopilotRequest, request: Request):
+    if _rate_limited(request.client.host if request.client else "unknown"):
+        raise HTTPException(429, "Demo copilot limit reached. Try again in a few minutes.")
+    context = body.context.model_dump() if body.context else {}
+    return copilot.answer(body.question, DB_PATH, context=context)
+
+
+if FRONTEND_DIST.is_dir():
+    # Single-service deployment: FastAPI also serves the built React app.
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

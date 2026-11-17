@@ -7,6 +7,19 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
+def build_examples(df, cutoff_months):
+    """One row per (cutoff, customer). Features use orders on or before the cutoff only;
+    the label is whether the customer orders in the following calendar month."""
+    examples = []
+    for month in cutoff_months:
+        cutoff = month.to_timestamp(how='end').normalize()
+        history = df[df.order_date <= cutoff]
+        returning = set(df[(df.order_date > cutoff) & (df.order_date < (month + 2).to_timestamp())].customer_id)
+        for cid, group in history.groupby('customer_id'):
+            examples.append({'cutoff': str(month), 'customer_id': cid, 'recency': (cutoff-group.order_date.max()).days, 'frequency': len(group), 'monetary': group.amount.sum(), 'label': int(cid in returning)})
+    return pd.DataFrame(examples)
+
+
 def compare(rows):
     if not rows:
         return {'status': 'needs_data', 'message': 'Upload multi-month data first.'}
@@ -15,14 +28,7 @@ def compare(rows):
     months = pd.period_range(df.order_date.min().to_period('M'), df.order_date.max().to_period('M'), freq='M')
     if len(months) < 6:
         return {'status': 'needs_data', 'message': 'Need at least six months. The newest month is excluded because it may be incomplete.'}
-    examples = []
-    for month in months[:-2]:
-        cutoff = month.to_timestamp(how='end').normalize()
-        history = df[df.order_date <= cutoff]
-        returning = set(df[(df.order_date > cutoff) & (df.order_date < (month + 2).to_timestamp())].customer_id)
-        for cid, group in history.groupby('customer_id'):
-            examples.append({'cutoff': str(month), 'recency': (cutoff-group.order_date.max()).days, 'frequency': len(group), 'monetary': group.amount.sum(), 'label': int(cid in returning)})
-    frame = pd.DataFrame(examples)
+    frame = build_examples(df, months[:-2])
     cutoffs = sorted(frame.cutoff.unique())
     train = frame[frame.cutoff < cutoffs[-2]]
     validation = frame[frame.cutoff == cutoffs[-2]]
